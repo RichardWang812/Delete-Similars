@@ -1,6 +1,6 @@
-# 查找“超过两年且内容相似”的文件（交互式确认删除）
+# 查找“近 N 天内且内容相似”的文件（交互式确认删除）
 
-这个小工具会扫描你指定的目录，找出**正文内容相似**的文件组（适合找“不同时间的修改版本”），并把其中**超过两年**的旧版本列出来，让你逐组确认是否删除。
+这个小工具会扫描你指定的目录，找出**正文内容相似**的文件组（适合找“不同时间的修改版本”），并把其中**近 N 天内**的重复版本列出来，让你逐组确认是否删除。
 
 默认是**干跑（dry-run）**：只打印要删的文件，不会真的删除。确认无误后再开 `--action trash` 或 `--action delete`。
 
@@ -30,8 +30,8 @@ python3 similar_file_cleaner_gui.py
 
 - 添加/移除要扫描的目录
 - 选择文件类型（DOCX/TXT/MD）
-- 调整常见参数（相似度阈值等）
-- 扫描后勾选要处理的旧版本文件，再选择 `trash`（推荐）或 `delete`
+- 通过滑动条调整常见参数（相似度阈值等）
+- 扫描后勾选要处理的候选版本文件，再选择 `trash`（推荐）或 `delete`
 
 只扫描 Word（docx）并写一份 JSON 报告：
 
@@ -39,7 +39,7 @@ python3 similar_file_cleaner_gui.py
 python3 find_similar_old_files.py ~/Documents --ext docx --report report.json
 ```
 
-确认后把旧版本移到废纸篓（推荐）：
+确认后把候选版本移到废纸篓（推荐）：
 
 ```bash
 python3 find_similar_old_files.py ~/Documents --action trash
@@ -59,7 +59,7 @@ python3 find_similar_old_files.py ~/Documents --action trash --yes
 
 ## 常用参数
 
-- `--age-years 2`：超过多少年算“旧文件”（默认 2 年）
+- `--within-days 30`：仅处理近多少天内的重复文件（默认 30 天）
 - `--min-similarity 0.82`：相似度阈值（越大越严格）
 - `--shingle-size 3`：分词后 N-gram 的 N（越小越宽松）
 - `--max-hamming 10`：SimHash 预筛选阈值（越大越宽松，速度可能变慢）

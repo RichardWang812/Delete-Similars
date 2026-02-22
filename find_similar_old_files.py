@@ -23,6 +23,8 @@ from typing import Iterable, Iterator, Sequence
 
 
 TOKEN_RE = re.compile(r"\w+", re.UNICODE)
+SECONDS_PER_DAY = 24 * 3600
+VALID_BANDS = (1, 2, 4, 8, 16, 32, 64)
 
 
 def iter_tokens(text: str) -> Iterator[str]:
@@ -770,7 +772,8 @@ def build_deletion_groups(
         keep = cluster_files[0]
         candidates = []
         for f in cluster_files[1:]:
-            if f.mtime >= cutoff_ts:
+            # Only keep candidates that are recent enough (within N days).
+            if f.mtime < cutoff_ts:
                 continue
             candidates.append(
                 DeletionCandidate(
@@ -796,7 +799,7 @@ def build_deletion_groups(
 def load_args(argv: Sequence[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        description="Search for similar documents and optionally delete old versions (interactive).",
+        description="Search for similar documents and optionally delete recent duplicate versions (interactive).",
         epilog=textwrap.dedent(
             """
             Notes
@@ -811,7 +814,14 @@ def load_args(argv: Sequence[str]) -> argparse.Namespace:
         default=[str(Path.home())],
         help="One or more root paths to scan (default: your home directory).",
     )
-    p.add_argument("--age-years", type=float, default=2.0, help="Old-file threshold in years (default: 2).")
+    p.add_argument(
+        "--within-days",
+        type=float,
+        default=30.0,
+        help="Only include duplicate candidates modified within N days (default: 30).",
+    )
+    # Backward compatibility for older invocations.
+    p.add_argument("--age-years", type=float, default=None, help=argparse.SUPPRESS)
     p.add_argument(
         "--ext",
         action="append",
@@ -867,8 +877,32 @@ def main(argv: Sequence[str]) -> int:
 
     exclude_files = args.exclude_file or []
 
+    within_days = args.within_days
+    if args.age_years is not None:
+        within_days = args.age_years * 365.25
+        print("[warn] --age-years is deprecated; use --within-days.", file=sys.stderr)
+
+    if within_days < 0:
+        print("[error] --within-days must be >= 0.", file=sys.stderr)
+        return 2
+    if args.bands not in VALID_BANDS:
+        print(f"[error] --bands must be one of: {', '.join(str(v) for v in VALID_BANDS)}.", file=sys.stderr)
+        return 2
+    if not (0.0 <= args.min_similarity <= 1.0):
+        print("[error] --min-similarity must be between 0 and 1.", file=sys.stderr)
+        return 2
+    if args.shingle_size < 1:
+        print("[error] --shingle-size must be >= 1.", file=sys.stderr)
+        return 2
+    if not (0 <= args.max_hamming <= 64):
+        print("[error] --max-hamming must be between 0 and 64.", file=sys.stderr)
+        return 2
+    if args.min_tokens < 0:
+        print("[error] --min-tokens must be >= 0.", file=sys.stderr)
+        return 2
+
     now = dt.datetime.now(dt.timezone.utc).timestamp()
-    cutoff_seconds = args.age_years * 365.25 * 24 * 3600
+    cutoff_seconds = within_days * SECONDS_PER_DAY
     cutoff_ts = now - cutoff_seconds
 
     fingerprints, stats = scan_fingerprints(
@@ -908,7 +942,7 @@ def main(argv: Sequence[str]) -> int:
         "cutoff_ts": cutoff_ts,
         "cutoff_local": fmt_mtime(cutoff_ts),
         "params": {
-            "age_years": args.age_years,
+            "within_days": within_days,
             "exts": sorted(exts),
             "min_tokens": args.min_tokens,
             "max_tokens": args.max_tokens,
@@ -935,7 +969,7 @@ def main(argv: Sequence[str]) -> int:
         return 0
 
     groups = build_deletion_groups(fingerprints, clusters, cutoff_ts=cutoff_ts)
-    print(f"Cutoff (older than): {fmt_mtime(cutoff_ts)}")
+    print(f"Cutoff (modified no earlier than): {fmt_mtime(cutoff_ts)}")
 
     suggested_deletes_total = 0
     deleted_total = 0
@@ -948,7 +982,7 @@ def main(argv: Sequence[str]) -> int:
         print(f"Keep (newest): {group.keep_path}")
         print(f"  mtime: {fmt_mtime(group.keep_mtime)}")
         print(f"  size:  {group.keep_size} bytes")
-        print("Candidates to delete (older than cutoff):")
+        print("Candidates to delete (within day-window cutoff):")
         for c in group.candidates:
             print(f"- {c.path}")
             print(f"  mtime: {fmt_mtime(c.mtime)}")

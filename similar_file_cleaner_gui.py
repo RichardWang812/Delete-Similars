@@ -23,7 +23,7 @@ from find_similar_old_files import (
 class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("相似旧文件清理（交互确认）")
+        self.title("相似文件清理（交互确认）")
         self.minsize(980, 640)
 
         self._work_q: queue.Queue[tuple[str, object]] = queue.Queue()
@@ -33,6 +33,7 @@ class App(tk.Tk):
         self._groups = []
         self._group_selected_candidates: dict[int, dict[str, bool]] = {}
         self._keep_iid_marker = "__KEEP__"
+        self._band_values = (1, 2, 4, 8, 16, 32, 64)
 
         self._build_ui()
         self._refresh_roots()
@@ -84,60 +85,113 @@ class App(tk.Tk):
         params.grid(row=6, column=0, sticky="nsew")
         params.columnconfigure(2, weight=1)
 
-        self.var_age = tk.StringVar(value="2")
-        self.var_min_similarity = tk.StringVar(value="0.82")
-        self.var_shingle = tk.StringVar(value="3")
-        self.var_max_hamming = tk.StringVar(value="10")
-        self.var_bands = tk.StringVar(value="8")
-        self.var_min_tokens = tk.StringVar(value="80")
+        self.var_within_days = tk.IntVar(value=30)
+        self.var_min_similarity = tk.DoubleVar(value=0.82)
+        self.var_shingle = tk.IntVar(value=3)
+        self.var_max_hamming = tk.IntVar(value=10)
+        self.var_bands_idx = tk.IntVar(value=self._band_values.index(8))
+        self.var_min_tokens = tk.IntVar(value=80)
 
         self.var_action = tk.StringVar(value="print")
 
-        help_age = "候选删除文件必须“修改时间早于现在 N 年”。每个相似组里，最新文件会被当作保留项，不会被删除。"
-        help_sim = "0~1，越大越严格。值越小越容易把“改动较多的版本”识别为同一组，但误判风险也更高。"
-        help_shingle = "把文本分词后按 N 个词组成片段做对比。N 越小越宽松（更能容忍小改动），N 越大越严格。"
-        help_hamming = "用于加速的预筛选阈值。越大越宽松，但需要比较的候选更多、速度可能更慢。"
-        help_bands = "用于加速的分桶参数。一般不用改；如果你发现漏检较多可适当增大（也可能更慢）。"
-        help_tokens = "内容太短容易误判；少于这个分词数量的文件会被忽略。"
-        help_action = "print=只展示结果不改动；trash=移到废纸篓（推荐）；delete=永久删除（不可恢复，会二次确认）。"
+        help_age = "只处理最近 N 天修改过的文件。"
+        help_sim = "越高越严格，越低越宽松。"
+        help_shingle = "越小越宽松，越大越严格。"
+        help_hamming = "越大越宽松，但可能更慢。"
+        help_bands = "用于加速，通常保持默认值。"
+        help_tokens = "少于该词数的文件会跳过。"
+        help_action = "print 预览；trash 入废纸篓；delete 永久删除。"
 
         row = 0
-        ttk.Label(params, text="超过(年)").grid(row=row, column=0, sticky="w")
-        ttk.Button(params, text="?", width=2, command=lambda: self._show_help("超过(年)", help_age)).grid(
-            row=row, column=1, sticky="w"
+        row = self._add_slider(
+            params,
+            row=row,
+            label="近(天内)",
+            help_title="近(天内)",
+            help_text=help_age,
+            variable=self.var_within_days,
+            from_v=0,
+            to_v=2000,
+            resolution=1,
+            value_formatter=lambda v: str(int(round(v))),
+            left_hint="更近",
+            right_hint="更久",
+            snap_int=True,
         )
-        ttk.Entry(params, textvariable=self.var_age, width=10).grid(row=row, column=2, sticky="ew")
-        row += 1
-        ttk.Label(params, text="相似度阈值").grid(row=row, column=0, sticky="w")
-        ttk.Button(params, text="?", width=2, command=lambda: self._show_help("相似度阈值", help_sim)).grid(
-            row=row, column=1, sticky="w"
+        row = self._add_slider(
+            params,
+            row=row,
+            label="相似度阈值",
+            help_title="相似度阈值",
+            help_text=help_sim,
+            variable=self.var_min_similarity,
+            from_v=0.5,
+            to_v=1.0,
+            resolution=0.01,
+            value_formatter=lambda v: f"{v:.2f}",
+            left_hint="更宽松",
+            right_hint="更严格",
         )
-        ttk.Entry(params, textvariable=self.var_min_similarity, width=10).grid(row=row, column=2, sticky="ew")
-        row += 1
-        ttk.Label(params, text="shingle-size").grid(row=row, column=0, sticky="w")
-        ttk.Button(params, text="?", width=2, command=lambda: self._show_help("shingle-size", help_shingle)).grid(
-            row=row, column=1, sticky="w"
+        row = self._add_slider(
+            params,
+            row=row,
+            label="shingle-size",
+            help_title="shingle-size",
+            help_text=help_shingle,
+            variable=self.var_shingle,
+            from_v=1,
+            to_v=10,
+            resolution=1,
+            value_formatter=lambda v: str(int(round(v))),
+            left_hint="更宽松",
+            right_hint="更严格",
+            snap_int=True,
         )
-        ttk.Entry(params, textvariable=self.var_shingle, width=10).grid(row=row, column=2, sticky="ew")
-        row += 1
-        ttk.Label(params, text="max-hamming").grid(row=row, column=0, sticky="w")
-        ttk.Button(params, text="?", width=2, command=lambda: self._show_help("max-hamming", help_hamming)).grid(
-            row=row, column=1, sticky="w"
+        row = self._add_slider(
+            params,
+            row=row,
+            label="max-hamming",
+            help_title="max-hamming",
+            help_text=help_hamming,
+            variable=self.var_max_hamming,
+            from_v=0,
+            to_v=64,
+            resolution=1,
+            value_formatter=lambda v: str(int(round(v))),
+            left_hint="更严格",
+            right_hint="更宽松",
+            snap_int=True,
         )
-        ttk.Entry(params, textvariable=self.var_max_hamming, width=10).grid(row=row, column=2, sticky="ew")
-        row += 1
-        ttk.Label(params, text="bands").grid(row=row, column=0, sticky="w")
-        ttk.Button(params, text="?", width=2, command=lambda: self._show_help("bands", help_bands)).grid(
-            row=row, column=1, sticky="w"
+        row = self._add_slider(
+            params,
+            row=row,
+            label="bands",
+            help_title="bands",
+            help_text=help_bands,
+            variable=self.var_bands_idx,
+            from_v=0,
+            to_v=len(self._band_values) - 1,
+            resolution=1,
+            value_formatter=lambda v: str(self._band_value_from_index(v)),
+            left_hint="更严格",
+            right_hint="更宽松",
+            snap_int=True,
         )
-        ttk.Entry(params, textvariable=self.var_bands, width=10).grid(row=row, column=2, sticky="ew")
-        row += 1
-        ttk.Label(params, text="min-tokens").grid(row=row, column=0, sticky="w")
-        ttk.Button(params, text="?", width=2, command=lambda: self._show_help("min-tokens", help_tokens)).grid(
-            row=row, column=1, sticky="w"
+        row = self._add_slider(
+            params,
+            row=row,
+            label="min-tokens",
+            help_title="min-tokens",
+            help_text=help_tokens,
+            variable=self.var_min_tokens,
+            from_v=0,
+            to_v=5000,
+            resolution=10,
+            value_formatter=lambda v: str(int(round(v))),
+            left_hint="跳过更少",
+            right_hint="跳过更多",
+            snap_int=True,
         )
-        ttk.Entry(params, textvariable=self.var_min_tokens, width=10).grid(row=row, column=2, sticky="ew")
-        row += 1
         ttk.Label(params, text="动作").grid(row=row, column=0, sticky="w")
         ttk.Button(params, text="?", width=2, command=lambda: self._show_help("动作", help_action)).grid(
             row=row, column=1, sticky="w"
@@ -167,8 +221,8 @@ class App(tk.Tk):
         right.grid(row=2, column=1, sticky="nsew")
         outer.rowconfigure(2, weight=1)
 
-        groups_frame = ttk.Labelframe(right, text="相似文件组（仅显示：有旧文件候选可删）", padding=6)
-        candidates_frame = ttk.Labelframe(right, text="文件列表（含保留文件；勾选要处理的旧版本）", padding=6)
+        groups_frame = ttk.Labelframe(right, text="相似文件组（仅显示：有候选可处理）", padding=6)
+        candidates_frame = ttk.Labelframe(right, text="文件列表（含保留文件；勾选要处理的版本）", padding=6)
         log_frame = ttk.Labelframe(right, text="日志", padding=6)
 
         right.add(groups_frame, weight=2)
@@ -234,6 +288,87 @@ class App(tk.Tk):
     def _show_help(self, title: str, message: str) -> None:
         messagebox.showinfo(f"参数说明：{title}", message)
 
+    def _band_value_from_index(self, index_value: float | int) -> int:
+        idx = int(round(float(index_value)))
+        idx = max(0, min(idx, len(self._band_values) - 1))
+        return self._band_values[idx]
+
+    def _add_slider(
+        self,
+        parent: ttk.Frame,
+        *,
+        row: int,
+        label: str,
+        help_title: str,
+        help_text: str,
+        variable: tk.Variable,
+        from_v: float,
+        to_v: float,
+        resolution: float,
+        value_formatter,
+        left_hint: str,
+        right_hint: str,
+        snap_int: bool = False,
+    ) -> int:
+        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w")
+        ttk.Button(parent, text="?", width=2, command=lambda: self._show_help(help_title, help_text)).grid(
+            row=row, column=1, sticky="w"
+        )
+
+        slider_wrap = ttk.Frame(parent)
+        slider_wrap.grid(row=row, column=2, sticky="ew")
+        slider_wrap.columnconfigure(0, weight=1)
+        value_var = tk.StringVar()
+
+        def sync_value() -> None:
+            raw = float(variable.get())
+            if snap_int:
+                snapped = int(round(raw))
+                snapped = max(int(from_v), min(snapped, int(to_v)))
+                if snapped != int(round(raw)):
+                    variable.set(snapped)
+                raw = float(snapped)
+            value_var.set(value_formatter(raw))
+
+        scale = tk.Scale(
+            slider_wrap,
+            from_=from_v,
+            to=to_v,
+            resolution=resolution,
+            showvalue=False,
+            orient=tk.HORIZONTAL,
+            variable=variable,
+            command=lambda _v: sync_value(),
+            highlightthickness=0,
+            bd=0,
+        )
+        scale.grid(row=0, column=0, sticky="ew")
+        ttk.Label(slider_wrap, textvariable=value_var, width=7, anchor="e").grid(row=0, column=1, sticky="e", padx=(6, 0))
+
+        ttk.Label(parent, text=f"左:{left_hint}  右:{right_hint}", wraplength=420).grid(
+            row=row + 1, column=2, sticky="w", pady=(0, 4)
+        )
+        sync_value()
+        return row + 2
+
+    def _read_scan_params(self) -> tuple[int, float, int, int, int, int]:
+        within_days = max(0, min(int(self.var_within_days.get()), 2000))
+        min_similarity = max(0.5, min(float(self.var_min_similarity.get()), 1.0))
+        shingle_size = max(1, min(int(self.var_shingle.get()), 10))
+        max_hamming = max(0, min(int(self.var_max_hamming.get()), 64))
+        min_tokens = max(0, min(int(self.var_min_tokens.get()), 1_000_000))
+        bands = self._band_value_from_index(self.var_bands_idx.get())
+
+        # Keep UI values clamped/synced to actual runtime values.
+        self.var_within_days.set(within_days)
+        self.var_min_similarity.set(round(min_similarity, 2))
+        self.var_shingle.set(shingle_size)
+        self.var_max_hamming.set(max_hamming)
+        self.var_bands_idx.set(self._band_values.index(bands))
+        self.var_min_tokens.set(min_tokens)
+
+        return within_days, min_similarity, shingle_size, max_hamming, bands, min_tokens
+
     def _refresh_roots(self) -> None:
         self.roots_list.delete(0, "end")
         for r in self._roots:
@@ -286,39 +421,12 @@ class App(tk.Tk):
         self.btn_apply.configure(state="disabled")
         self.status.configure(text="就绪")
 
-    def _parse_float(self, name: str, value: str, *, min_v: float, max_v: float) -> float:
-        try:
-            v = float(value)
-        except ValueError:
-            raise ValueError(f"{name} 不是数字")
-        if not (min_v <= v <= max_v):
-            raise ValueError(f"{name} 需要在 {min_v} 到 {max_v} 之间")
-        return v
-
-    def _parse_int(self, name: str, value: str, *, min_v: int, max_v: int) -> int:
-        try:
-            v = int(value)
-        except ValueError:
-            raise ValueError(f"{name} 不是整数")
-        if not (min_v <= v <= max_v):
-            raise ValueError(f"{name} 需要在 {min_v} 到 {max_v} 之间")
-        return v
-
     def _start_scan(self) -> None:
         if self._scan_thread is not None and self._scan_thread.is_alive():
             messagebox.showinfo("提示", "正在扫描中，请稍等…")
             return
 
-        try:
-            age_years = self._parse_float("超过(年)", self.var_age.get(), min_v=0.0, max_v=100.0)
-            min_similarity = self._parse_float("相似度阈值", self.var_min_similarity.get(), min_v=0.0, max_v=1.0)
-            shingle_size = self._parse_int("shingle-size", self.var_shingle.get(), min_v=1, max_v=10)
-            max_hamming = self._parse_int("max-hamming", self.var_max_hamming.get(), min_v=0, max_v=64)
-            bands = self._parse_int("bands", self.var_bands.get(), min_v=1, max_v=64)
-            min_tokens = self._parse_int("min-tokens", self.var_min_tokens.get(), min_v=0, max_v=1_000_000)
-        except ValueError as e:
-            messagebox.showerror("参数错误", str(e))
-            return
+        within_days, min_similarity, shingle_size, max_hamming, bands, min_tokens = self._read_scan_params()
 
         exts = self._get_exts()
         roots = list(self._roots) if self._roots else [Path.home()]
@@ -364,7 +472,7 @@ class App(tk.Tk):
                     cache_path=".autodelete_cache.sqlite3",
                     progress_cb=lambda s: self._work_q.put(("progress", s)),
                 )
-                cutoff_ts = dt.datetime.now(dt.timezone.utc).timestamp() - (age_years * 365.25 * 24 * 3600)
+                cutoff_ts = dt.datetime.now(dt.timezone.utc).timestamp() - (within_days * 24 * 3600)
                 clusters = suggest_similar_groups(
                     fingerprints,
                     max_hamming=max_hamming,
@@ -375,7 +483,9 @@ class App(tk.Tk):
                     max_token_diff_ratio=0.5,
                 )
                 groups = build_deletion_groups(fingerprints, clusters, cutoff_ts=cutoff_ts)
-                self._work_q.put(("done", {"groups": groups, "stats": stats, "cutoff_ts": cutoff_ts}))
+                self._work_q.put(
+                    ("done", {"groups": groups, "stats": stats, "cutoff_ts": cutoff_ts, "within_days": within_days})
+                )
             except Exception as e:
                 self._work_q.put(("error", str(e)))
 
@@ -396,21 +506,24 @@ class App(tk.Tk):
             elif kind == "error":
                 self.btn_scan.configure(state="normal")
                 self.status.configure(text="扫描失败")
+                self._scan_thread = None
                 messagebox.showerror("扫描失败", str(payload))
             elif kind == "done":
                 data = payload  # type: ignore[assignment]
                 self._groups = data["groups"]
                 stats = data["stats"]
                 cutoff_ts = data["cutoff_ts"]
+                within_days = data["within_days"]
                 self._log(f"完成：{asdict(stats)}")
-                self._log(f"仅候选：修改时间早于 {fmt_mtime(cutoff_ts)}")
+                self._log(f"仅候选：修改时间在近 {within_days} 天内（晚于 {fmt_mtime(cutoff_ts)}）")
                 self._render_groups()
                 self.btn_scan.configure(state="normal")
+                self._scan_thread = None
                 if self._groups:
                     self.btn_apply.configure(state="normal")
                     self.status.configure(text=f"扫描完成：找到 {len(self._groups)} 个可处理的相似组")
                 else:
-                    self.status.configure(text="扫描完成：未找到可处理的相似旧文件组")
+                    self.status.configure(text=f"扫描完成：近 {within_days} 天内未找到可处理的相似文件组")
             else:
                 self._log(f"[warn] unknown event: {kind}")
 
